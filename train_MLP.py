@@ -23,10 +23,10 @@ df = df.sample(frac=1, random_state=42).reset_index(drop=True)
 features = [
     "response_time",
     "response_count",
-    #"ttl",
+    #"ttl",             
     "packet_interval",
     "duplicate_txid",
-    #"is_private_ip"
+    #"is_private_ip"    #內網或外網的特徵，這裡先不加
 ]
 
 # 可選加分特徵（如果你有加）
@@ -209,7 +209,10 @@ for f, imp in importance:
     print(f"{f}: {imp:.6f}")
 
 
-'''
+'''在初步實驗中，TTL 與 IP 類型特徵能夠使模型達到接近 100% 的準確率。
+然而進一步分析發現，這些特徵在本實驗環境中與標籤高度相關，導致模型產生過度依賴，無法反映實際攻擊行為。
+因此本研究將其移除，以避免模型學習到非通用性的判斷規則，提升模型的泛化能力。
+
 Epoch 1/30 - Loss: 59.7643
 Epoch 2/30 - Loss: 40.3294
 Epoch 3/30 - Loss: 34.1523
@@ -261,9 +264,9 @@ Confusion Matrix:
 📊 Baseline Accuracy: 0.8792
 
 🔥 Feature Importance (越大越重要):
-response_time: 0.265469
-duplicate_txid: 0.133733
-packet_interval: 0.080838
-response_count: 0.034930
+response_time: 0.265469     回應時間
+duplicate_txid: 0.133733    同一 TXID 出現多次 response
+packet_interval: 0.080838   封包之間的時間間隔
+response_count: 0.034930    多重回應
 
 '''
