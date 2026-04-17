@@ -1,4 +1,3 @@
-#dns_detector_realtime.py
 from scapy.all import *
 import torch
 import torch.nn as nn
@@ -7,11 +6,12 @@ import time
 import matplotlib.pyplot as plt
 from collections import deque, defaultdict
 import ipaddress
+import threading
 
 # =========================
 # 1. 載入模型
 # =========================
-MODEL_PATH = "/home/snow/DNS_dnsmasq_log/Spoofing_detect/dns_model.pth"
+MODEL_PATH = "/home/snow/DNS_dnsmasq_log/Spoofing_detect/dns_model(35000).pth"
 
 checkpoint = torch.load(MODEL_PATH, weights_only=False)
 
@@ -39,7 +39,7 @@ model = MLP(len(features))
 model.load_state_dict(checkpoint["model_state_dict"])
 model.eval()
 
-print("✅ 模型載入完成")
+print("✅ 模型載入完成（純 ML 判斷）")
 
 # =========================
 # 2. 狀態追蹤
@@ -48,16 +48,27 @@ query_tracker = {}
 response_counter = defaultdict(int)
 last_packet_time = time.time()
 
-# 畫圖資料
-time_window = deque(maxlen=50)
-normal_counts = deque(maxlen=50)
-attack_counts = deque(maxlen=50)
+# =========================
+# 3. 時間窗
+# =========================
+WINDOW_SIZE = 0.2
 
-normal_total = 0
-attack_total = 0
+current_normal = 0
+current_suspicious = 0   # ✅ 新增
+current_attack = 0
 
 # =========================
-# 3. 工具函數
+# 4. 畫圖資料
+# =========================
+time_window = deque(maxlen=50)
+normal_counts = deque(maxlen=50)
+suspicious_counts = deque(maxlen=50)  # ✅ 新增
+attack_counts = deque(maxlen=50)
+
+time_index = 0
+
+# =========================
+# 5. 工具
 # =========================
 def is_private(ip):
     try:
@@ -66,11 +77,9 @@ def is_private(ip):
         return 0
 
 # =========================
-# 4. 預測函數
+# 6. ML 預測（只回傳 prob）
 # =========================
-def predict(record):
-    global normal_total, attack_total
-
+def predict_ml(record):
     x = np.array([[record[f] for f in features]])
     x = scaler.transform(x)
     x = torch.FloatTensor(x)
@@ -78,61 +87,32 @@ def predict(record):
     with torch.no_grad():
         prob = model(x).item()
 
-    label = 1 if prob > 0.5 else 0
-
-    if label == 1:
-        attack_total += 1
-    else:
-        normal_total += 1
-
-    return label, prob
+    return prob   # ✅ 只回傳機率
 
 # =========================
-# 5. 畫圖初始化
-# =========================
-plt.ion()
-fig, ax = plt.subplots()
-
-# =========================
-# 6. 更新圖表
-# =========================
-def update_plot():
-    ax.clear()
-    ax.plot(time_window, normal_counts, color="green", label="Normal")
-    ax.plot(time_window, attack_counts, color="red", label="Attack")
-
-    ax.set_xlabel("Time")
-    ax.set_ylabel("Packet Count")
-    ax.legend()
-
-    total = normal_total + attack_total
-    if total > 0:
-        normal_ratio = normal_total / total * 100
-        attack_ratio = attack_total / total * 100
-        ax.set_title(f"Normal: {normal_ratio:.1f}% | Attack: {attack_ratio:.1f}%")
-
-    plt.pause(0.01)
-
-# =========================
-# 7. DNS Callback
+# 7. DNS callback
 # =========================
 def dns_callback(packet):
     global last_packet_time
+    global current_normal, current_suspicious, current_attack
 
     current_time = time.time()
     interval = current_time - last_packet_time
     last_packet_time = current_time
 
     if packet.haslayer(DNSQR) and packet[DNS].qr == 0:
-        qname = packet[DNSQR].qname.decode().rstrip('.')
+        qname = packet[DNSQR].qname.decode(errors="ignore").rstrip('.')
         query_tracker[(qname, packet[DNS].id)] = current_time
 
     elif packet.haslayer(DNSRR) and packet[DNS].qr == 1:
-        qname = packet[DNSQR].qname.decode().rstrip('.')
+        try:
+            qname = packet[DNSQR].qname.decode(errors="ignore").rstrip('.')
+        except:
+            return
+
         txid = packet[DNS].id
         key = (qname, txid)
 
-        # response time
         if key in query_tracker:
             response_time = current_time - query_tracker[key]
         else:
@@ -141,42 +121,85 @@ def dns_callback(packet):
         response_counter[key] += 1
 
         try:
+            ttl = packet[DNSRR].ttl
+        except:
+            ttl = 0
+
+        try:
             answer_ip = packet[DNSRR].rdata
+            if isinstance(answer_ip, bytes):
+                answer_ip = answer_ip.decode()
         except:
             answer_ip = "0.0.0.0"
 
         record = {
             "response_time": response_time,
-            "response_count": response_counter[key],
+            #"response_count": response_counter[key],
+            "ttl": ttl,
             "packet_interval": interval,
             "duplicate_txid": int(response_counter[key] > 1),
             "is_private_ip": is_private(answer_ip),
         }
 
-        # 預測
-        label, prob = predict(record)
+        # 🔥 ML
+        prob = predict_ml(record)
 
-        label_str = "ATTACK" if label == 1 else "NORMAL"
-        color = "\033[91m" if label == 1 else "\033[92m"
+        # 🔥 三分類
+        if prob > 0.8:
+            color = "\033[91m"
+            label_str = "ATTACK"
+            current_attack += 1
 
-        print(f"{color}[{label_str}] {qname} → {answer_ip} ({prob*100:.1f}%)\033[0m")
+        elif prob > 0.5:
+            color = "\033[93m"
+            label_str = "SUSPICIOUS"
+            current_suspicious += 1   # ✅ 必須加
 
-        # 更新圖表資料
-        now = len(time_window)
-
-        if label == 1:
-            attack_counts.append(attack_counts[-1] + 1 if attack_counts else 1)
-            normal_counts.append(normal_counts[-1] if normal_counts else 0)
         else:
-            normal_counts.append(normal_counts[-1] + 1 if normal_counts else 1)
-            attack_counts.append(attack_counts[-1] if attack_counts else 0)
+            color = "\033[92m"
+            label_str = "NORMAL"
+            current_normal += 1
 
-        time_window.append(now)
-
-        update_plot()
+        print(f"{color}[{label_str}] {qname} → {answer_ip} TTL={ttl} ({prob*100:.1f}%)\033[0m")
 
 # =========================
-# 8. 開始監聽
+# 8. Sniff Thread
 # =========================
-print("🚀 即時 DNS 偵測器啟動...")
-sniff(filter="udp port 53", prn=dns_callback, store=0)
+def sniff_thread():
+    sniff(filter="udp port 53", prn=dns_callback, store=0)
+
+# =========================
+# 9. 主執行緒畫圖
+# =========================
+plt.ion()
+fig, ax = plt.subplots()
+
+print("🚀 即時 DNS 偵測器（含 Suspicious）啟動...")
+
+t = threading.Thread(target=sniff_thread, daemon=True)
+t.start()
+
+while True:
+    time.sleep(WINDOW_SIZE)
+
+    time_index += 1
+
+    time_window.append(time_index)
+    normal_counts.append(current_normal)
+    suspicious_counts.append(current_suspicious)  # ✅ 新增
+    attack_counts.append(current_attack)
+
+    current_normal = 0
+    current_suspicious = 0   # ✅ reset
+    current_attack = 0
+
+    ax.clear()
+    ax.plot(time_window, normal_counts, color="green", label="Normal")
+    ax.plot(time_window, suspicious_counts, color="orange", label="Suspicious")  # ✅ 新線
+    ax.plot(time_window, attack_counts, color="red", label="Attack")
+
+    ax.set_xlabel("Time (0.2s per step)")
+    ax.set_ylabel("Packet Count")
+    ax.legend()
+
+    plt.pause(0.001)
