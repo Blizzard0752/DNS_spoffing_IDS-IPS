@@ -1,4 +1,3 @@
-#dns_query_simulator.py
 import socket
 import time
 import random
@@ -21,7 +20,7 @@ while True:
     if random.random() < 0.3:  # 30%概率连续查
         time.sleep(random.uniform(0.1, 1))
     else:
-        time.sleep(random.uniform(5, 30))
+        time.sleep(random.uniform(1.5, 3))
 
 '''
 sudo python3 /home/snow/VScode_programing/Python/畢業專題/detect/dns_query_simulator.py
