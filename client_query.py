@@ -4,7 +4,7 @@ import random
 
 domains = ["google.com", "youtube.com", "github.com", 
            "stackoverflow.com", "wikipedia.org", "reddit.com",
-           "amazon.com", "facebook.com", "twitter.com", "microsoft.com"]
+           "amazon.com", "facebook.com", "twitter.com", "microsoft.com", "example.com"]
 
 while True:
     # 随机选一个域名
@@ -20,7 +20,7 @@ while True:
     if random.random() < 0.3:  # 30%概率连续查
         time.sleep(random.uniform(0.1, 1))
     else:
-        time.sleep(random.uniform(1.5, 3))
+        time.sleep(random.uniform(3, 5))
 
 '''
 sudo python3 /home/snow/VScode_programing/Python/畢業專題/detect/dns_query_simulator.py
