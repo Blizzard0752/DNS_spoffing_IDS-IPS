@@ -22,7 +22,7 @@ df = df.sample(frac=1, random_state=42).reset_index(drop=True)
 # =========================
 features = [
     "response_time",
-    #"ttl",
+    "ttl",
     "packet_interval",
     "duplicate_txid",
     "is_private_ip"
