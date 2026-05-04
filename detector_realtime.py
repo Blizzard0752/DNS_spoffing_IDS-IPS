@@ -33,37 +33,27 @@ TARGET_DOMAINS = {
 }
 
 # =========================
-# 攻擊偵測參數
+# 風險系統參數
 # =========================
-WINDOW_SIZE      = 10
-ATTACK_THRESHOLD = 7
-NORMAL_THRESHOLD = 7
-ATTACK_SEQ_TH    = 3
-NORMAL_SEQ_TH    = 5
+PROB_WINDOW   = deque(maxlen=4)  # 滑動窗口，最近 20 個封包
+ATTACK_TH     = 0.5              # 攻擊判定門檻 θ
+RISE_RATE     = 0.15              # 上升速率
+DECAY_RATE    = 0.10              # 下降速率
+EMA_ALPHA     = 0.8              # EMA 平滑係數
 
-# ===== 攻擊偵測 =====
-attack_state           = False
-attack_seq_count       = 0
-normal_seq_count       = 0
-recent_labels          = deque(maxlen=10)
-attack_spans           = []
-current_attack_start   = None
-first_attack_candidate = None
-last_attack_seen       = None
-
-# =========================
-# ⭐ 新增：風險系統（累積版本）
-# =========================
 risk_value   = 0.0
+ema_risk     = 0.0
 risk_history = []
 time_history = []
 start_time   = time.time()
+prob_buffer  = []
 
-prob_buffer = []
-
-# ⭐ 改成 max-based
-RISK_GAIN = 0.08          # 👉 建議調小（因為現在是每次都加）
-RISK_DECAY_NORMAL = 0.08
+# =========================
+# 攻擊區間記錄
+# =========================
+attack_regions    = []
+in_attack         = False
+attack_start_time = None
 
 # =========================
 # 載入模型
@@ -87,7 +77,7 @@ class MLP(nn.Module):
 model = MLP(len(features))
 model.load_state_dict(checkpoint["model_state_dict"])
 model.eval()
-print("✅ ML DNS IPS（風險累積版本）啟動")
+print("✅ ML DNS IPS（線性風險版本）啟動")
 
 # =========================
 # 狀態
@@ -95,15 +85,6 @@ print("✅ ML DNS IPS（風險累積版本）啟動")
 query_table      = {}
 response_counter = defaultdict(int)
 lock             = threading.Lock()
-
-# =========================
-# 原本圖表資料（保留，不刪）
-# =========================
-query_order_counter = 0
-key_to_qidx         = {}
-plot_data           = {}
-attack_spans_qidx   = []
-current_attack_start_qidx  = None
 
 # =========================
 # 工具
@@ -122,7 +103,7 @@ def predict_prob(record):
         return model(x).item()
 
 # =========================
-# DNS 回應
+# DNS 回應建構
 # =========================
 def build_response(qname, txid, ip):
     dns = DNS(
@@ -134,20 +115,16 @@ def build_response(qname, txid, ip):
     return bytes(dns)
 
 # =========================
-# forward query
+# 轉發查詢
 # =========================
 def forward_query(data, sport):
     pkt = IP(dst=DNS_SERVER) / UDP(sport=sport, dport=53) / DNS(data)
     send(pkt, verbose=0)
 
 # =========================
-# 收 response
+# 收 DNS 回應（Scapy sniff）
 # =========================
 def scapy_response_handler(pkt):
-    global attack_state, attack_seq_count, normal_seq_count
-    global first_attack_candidate, last_attack_seen
-    global prob_buffer
-
     if DNS not in pkt:
         return
     dns = pkt[DNS]
@@ -155,11 +132,11 @@ def scapy_response_handler(pkt):
         return
 
     qname = dns.qd.qname.decode(errors="ignore").strip(".")
-    # ⭐ 過濾非目標 domain（關鍵修正）
     if not any(qname.endswith(d) for d in TARGET_DOMAINS):
         return
-    txid  = dns.id
-    key   = (txid, qname)
+
+    txid = dns.id
+    key  = (txid, qname)
 
     with lock:
         if key not in query_table:
@@ -188,7 +165,6 @@ def scapy_response_handler(pkt):
 
     prob = predict_prob(record)
 
-    # ⭐ 只收集，不直接算 risk
     with lock:
         prob_buffer.append(prob)
 
@@ -201,7 +177,6 @@ def scapy_response_handler(pkt):
 
     print(f"{color}[{label}] {qname} → {answer_ip} TTL={ttl} ({prob*100:.1f}%){COLOR['END']}")
 
-    # ===== IPS 行為（完全保留）=====
     with lock:
         if label == "NORMAL":
             if not query_table[key]["done"]:
@@ -213,7 +188,7 @@ def scapy_response_handler(pkt):
             print(f"{COLOR['RED']}[BLOCK] {qname}{COLOR['END']}")
 
 # =========================
-# query handler
+# 處理 Client 查詢
 # =========================
 def handle_query(data, client_addr, sock):
     dns = DNS(data)
@@ -234,7 +209,7 @@ def handle_query(data, client_addr, sock):
     forward_query(data, client_addr[1])
 
 # =========================
-# socket server
+# UDP Socket 監聽
 # =========================
 def socket_listener():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -258,81 +233,73 @@ if __name__ == "__main__":
     ).start()
     threading.Thread(target=socket_listener, daemon=True).start()
 
-    # ===== ⭐ 新圖：Risk 曲線 =====
     plt.ion()
     fig, ax = plt.subplots()
-
-    # ⭐ 攻擊區塊偵測
-    attack_regions = []
-    in_attack = False
-    attack_start_time = None
 
     while True:
         time.sleep(0.2)
 
         with lock:
-            # =========================
-            # ⭐ 改成 max 判斷（核心）
-            # =========================
-            if len(prob_buffer) == 0:
-                max_prob = None
-            else:
-                max_prob = max(prob_buffer)
-
-            # ⭐ 一定要清空（關鍵修正）
-            prob_buffer.clear()
-            # ⭐ 先算時間（⚠️ 提前）
             current_time = time.time() - start_time
-            # ⭐ 風險更新
-            if max_prob is None:
-                pass
 
-            elif max_prob > 0.8:
-                risk_value += RISK_GAIN
+            # Step 1：把新封包機率加入滑動窗口
+            for p in prob_buffer:
+                PROB_WINDOW.append(p)
+            prob_buffer.clear()
 
-                # ⭐ 開始攻擊區間
-                if not in_attack:
-                    in_attack = True
-                    attack_start_time = time.time() - start_time
+            # Step 2：計算滑動窗口平均機率
+            # avg_prob = (1/N) * sum(p_i), N = min(|buffer|, 20)
+            if len(PROB_WINDOW) == 0:
+                avg_prob = 0.0
             else:
-                risk_value -= RISK_DECAY_NORMAL
+                avg_prob = sum(PROB_WINDOW) / len(PROB_WINDOW)
 
-                # ⭐ 結束攻擊區間
+            # Step 3：線性風險增量
+            # avg_prob > θ → Δ = +RISE_RATE × avg_prob
+            # avg_prob ≤ θ → Δ = -DECAY_RATE × (1 - avg_prob)
+            if avg_prob > ATTACK_TH:
+                delta = RISE_RATE * avg_prob
+
+                if not in_attack:
+                    in_attack         = True
+                    attack_start_time = current_time
+            else:
+                # 🔥 新增：快速下降條件
+                if avg_prob < 0.4:
+                    delta = -0.2   # ← 直接快速掉
+                else:
+                    delta = -DECAY_RATE * (1 - avg_prob)
+
                 if in_attack:
                     in_attack = False
                     attack_regions.append((attack_start_time, current_time))
 
-             # ⭐ 限制範圍
-            risk_value = max(0, min(1, risk_value))
-            risk_percent = risk_value * 100
+            # Step 4：更新風險值，限制在 [0, 1]
+            # risk_t = clip(risk_{t-1} + Δ, 0, 1)
+            risk_value = max(0.0, min(1.0, risk_value + delta))
 
-            risk_history.append(risk_percent)
+            # Step 5：EMA 平滑
+            # EMA_t = α × risk_t + (1 - α) × EMA_{t-1}
+            ema_risk = EMA_ALPHA * risk_value + (1 - EMA_ALPHA) * ema_risk
+
+            # Step 6：輸出成百分比
+            risk_history.append(ema_risk * 100)
             time_history.append(current_time)
 
             x = list(time_history)
             y = list(risk_history)
 
         ax.clear()
-        ax.plot(x, y, label="Raw Risk (%)", color='black')
+        ax.plot(x, y, color='black', label="Risk (%)")
 
-        # ⭐ 畫攻擊區塊
         for start, end in attack_regions:
             ax.axvspan(start, end, alpha=0.2, color='red')
-
-        # ⭐ 如果攻擊還沒結束（正在進行）
         if in_attack:
             ax.axvspan(attack_start_time, current_time, alpha=0.2, color='red')
 
         ax.set_xlabel("Time (seconds)")
         ax.set_ylabel("Risk (%)")
-        ax.set_title("DNS Attack Accumulated Risk")
+        ax.set_title("DNS Attack Risk (Linear)")
         ax.set_ylim(0, 110)
 
         plt.pause(0.001)
-
-
-'''
-即時威脅強度：
-prob = σ(w1*ttl + w2*response_time + w3*interval + w4*is_private + ...)
-risk_t = risk_{t-1} * decay(0.9) + prob * gain(0.25)
-'''
