@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Example Login</title>
+
+<style>
+body{
+    background-color:#f2f2f2;
+    font-family:Arial;
+}
+
+.container{
+    width:350px;
+    margin:120px auto;
+    padding:30px;
+    background:white;
+    border-radius:10px;
+    box-shadow:0 0 10px gray;
+    text-align:center;
+}
+
+input{
+    width:90%;
+    padding:10px;
+    margin:10px;
+}
+
+button{
+    padding:10px 20px;
+    background:#4285f4;
+    color:white;
+    border:none;
+}
+</style>
+
+</head>
+
+<body>
+
+<div class="container">
+
+<h2>Example Login</h2>
+
+<p>This is the legitimate server.</p>
+
+<input type="text" placeholder="Username">
+
+<input type="password" placeholder="Password">
+
+<br>
+
+<button onclick="alert('Credentials captured (simulation)')">
+Login
+</button>
+
+<p style="color:rgb(0, 203, 41)">
+Official Example Website
+</p>
+
+</div>
+
+</body>
+</html>
+
+<!--    啟用Reel Web Server -> CMD :
+在 Client (192.168.10.11) 的 Reel_site 資料夾：
+cd /home/snow/VScode_programing/Python/畢業專題/Reel_site
+
+啟動 server：
+sudo python -m http.server 80
+
+這時候
+http://192.168.10.200
+
+就會顯示你的假網站。
+-->
+
