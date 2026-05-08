@@ -38,8 +38,8 @@ TARGET_DOMAINS = {
 PROB_WINDOW   = deque(maxlen=4)  # 滑動窗口，最近 20 個封包
 ATTACK_TH     = 0.5              # 攻擊判定門檻 θ
 RISE_RATE     = 0.15              # 上升速率
-DECAY_RATE    = 0.10              # 下降速率
-EMA_ALPHA     = 0.8              # EMA 平滑係數
+DECAY_RATE    = 0.05              # 下降速率
+EMA_ALPHA     = 0.7              # EMA 平滑係數
 
 risk_value   = 0.0
 ema_risk     = 0.0
@@ -77,7 +77,7 @@ class MLP(nn.Module):
 model = MLP(len(features))
 model.load_state_dict(checkpoint["model_state_dict"])
 model.eval()
-print("✅ ML DNS IPS（線性風險版本）啟動")
+print("✅ ML DNS IPS 啟動")
 
 # =========================
 # 狀態
@@ -265,8 +265,8 @@ if __name__ == "__main__":
                     attack_start_time = current_time
             else:
                 # 🔥 新增：快速下降條件
-                if avg_prob < 0.4:
-                    delta = -0.2   # ← 直接快速掉
+                if avg_prob < 0.3:
+                    delta = -0.05   # ← 直接快速掉
                 else:
                     delta = -DECAY_RATE * (1 - avg_prob)
 
@@ -303,3 +303,8 @@ if __name__ == "__main__":
         ax.set_ylim(0, 110)
 
         plt.pause(0.001)
+
+
+'''
+sudo $(which python) /home/snow/VScode_programing/Python/畢業專題/detect/defence_realtime.py
+'''
