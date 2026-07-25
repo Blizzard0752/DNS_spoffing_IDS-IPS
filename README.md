@@ -293,7 +293,7 @@ If you use this project for academic or research purposes, please cite this repo
 
 # 👨‍💻 Author
 
-**Chen Guan-Xuan**
+**Chen Kuan-Hsuan**
 
 Department of Computer Science and Information Engineering
 
